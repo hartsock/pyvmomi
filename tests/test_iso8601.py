@@ -81,8 +81,6 @@ class Iso8601Tests(unittest.TestCase):
         my_vcr = vcr.VCR()
         my_vcr.register_matcher('document', check_date_time_value)
 
-        # NOTE (hartsock): the `match_on` option is altered to use the
-        # look at the XML body sent to the server
         with my_vcr.use_cassette('iso8601_set_datetime.yaml',
                                  cassette_library_dir=fixtures_path,
                                  record_mode='once',
