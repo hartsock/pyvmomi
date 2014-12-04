@@ -70,3 +70,78 @@ class VirtualMachineTests(tests.VCRTestBase):
             if virtual_machine.guest:
                 for net in virtual_machine.guest.net:
                     self.assertTrue(net.macAddress in macs)
+
+    @vcr.use_cassette('vm_mount_vmdk.yaml',
+                      cassette_library_dir=tests.fixtures_path,
+                      record_mode='never')
+    def test_vm_mount_vmdk(self):
+        si = connect.SmartConnect(host='vcsa',
+                                  user='my_user',
+                                  pwd='my_password')
+        content = si.RetrieveContent()
+
+        datacenters = [entity for entity in content.rootFolder.childEntity
+                       if hasattr(entity, 'vmFolder')]
+
+        dc = None
+        for datacenter in datacenters:
+            if datacenter.name == 'Datacenter0':
+                dc = datacenter
+
+        self.assertIsNotNone(dc)
+
+        search = content.searchIndex
+        vm = search.FindByDatastorePath(dc, '[storage0] box_copy/box.vmx')
+
+        # the details we will need to make the disk:
+        disk_path = '[storage0] disks/box.vmdk'
+        capacity = 16 * 1024 * 1024
+
+        controller = None
+        devices = vm.config.hardware.device
+        for device in devices:
+            if 'SCSI' in device.deviceInfo.label:
+                controller = device
+
+        self.assertIsNotNone(controller)
+        self.assertTrue(controller.hotAddRemove)
+
+        virtual_disk = vim.vm.device.VirtualDisk()
+
+        # https://github.com/vmware/pyvmomi/blob/master
+        # /docs/vim/vm/device/VirtualDisk/FlatVer2BackingInfo.rst
+        virtual_disk.backing = \
+            vim.vm.device.VirtualDisk.FlatVer2BackingInfo()
+
+        # https://github.com/vmware/pyvmomi/blob/master
+        # /docs/vim/vm/device/VirtualDiskOption/
+        # DiskMode.rst#independent_persistent
+        virtual_disk.backing.diskMode = \
+            vim.vm.device.VirtualDiskOption.DiskMode.persistent
+
+        virtual_disk.backing.thinProvisioned = False
+        virtual_disk.backing.eagerlyScrub = True
+        virtual_disk.backing.fileName = disk_path
+
+        virtual_disk.connectable = vim.vm.device.VirtualDevice.ConnectInfo()
+        virtual_disk.connectable.startConnected = True
+        virtual_disk.connectable.allowGuestControl = False
+        virtual_disk.connectable.connected = True
+
+        virtual_disk.key = -100
+        virtual_disk.controllerKey = controller.key
+        virtual_disk.unitNumber = len(controller.device)
+        virtual_disk.capacityInKB = capacity
+
+        device_spec = vim.vm.device.VirtualDiskSpec()
+        device_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
+        device_spec.device = virtual_disk
+
+        spec = vim.vm.ConfigSpec()
+        spec.deviceChange = [device_spec]
+
+        task = vm.ReconfigVM_Task(spec)
+        while task.info.state in [vim.TaskInfo.State.queued,
+                                  vim.TaskInfo.State.running]:
+            pass
+        self.assertEqual(task.info.state, vim.TaskInfo.State.success)
